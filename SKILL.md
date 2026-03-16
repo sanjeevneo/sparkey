@@ -1,6 +1,6 @@
 ---
 name: sparkey
-description: Time-limited, self-destructing SSH access for AI agents. Four-layer defense-in-depth: certificate TTL, OS account expiry, command-restricted dispatch, and automated cleanup. Zero credentials survive the session.
+description: Time-limited, self-destructing SSH access for AI agents. Four-layer defense-in-depth: certificate TTL, OS account expiry, command-restricted dispatch, and automated cleanup. Zero session artifacts survive.
 license: MIT
 homepage: https://github.com/sanjeevneo/sparkey
 files:
@@ -10,7 +10,7 @@ metadata: {"openclaw":{"requires":{"bins":["ssh-keygen","useradd","userdel","use
 
 # Temporary SSH Access for AI Agent Support
 
-Defense-in-depth temporary SSH access for AI agents — combines certificate TTL, OS account expiration, command-restricted dispatch, and automated cleanup. Zero persistent credentials survive a session.
+Defense-in-depth temporary SSH access for AI agents — combines certificate TTL, OS account expiration, command-restricted dispatch, and automated cleanup. Zero session artifacts survive — all agent accounts, keys, certificates, dispatch shells, and cleanup timers are destroyed on session end or TTL expiry. The CA private key is a persistent operator-side credential requiring separate protection (see Security Considerations).
 
 **Platform:** Linux (requires standard user-management tools).
 

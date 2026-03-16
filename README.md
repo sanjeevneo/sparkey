@@ -1,6 +1,6 @@
 # sparkey
 
-Time-limited, self-destructing SSH access for AI agents. Four-layer defense-in-depth: certificate TTL, OS account expiry, command-restricted dispatch, and automated cleanup. Zero credentials survive the session.
+Time-limited, self-destructing SSH access for AI agents. Four-layer defense-in-depth: certificate TTL, OS account expiry, command-restricted dispatch, and automated cleanup. Zero session artifacts survive.
 
 ---
 
@@ -10,7 +10,7 @@ Static credentials cause persistent breaches. A leaked SSH key works identically
 
 - **Expires automatically** — cryptographic certificate TTL, not "remember to revoke"
 - **Restricts commands** — read-only diagnostics by default, no full shell
-- **Leaves nothing behind** — account, keys, and scripts destroyed after each session
+- **Leaves no session artifacts** — account, keys, and scripts destroyed after each session
 - **Logs everything** — sanitized audit trail of every command
 
 ---
@@ -123,6 +123,20 @@ The SKILL.md file follows the [Agent Skills open standard](https://github.com/an
 - **Minimal target footprint** — no scripts transferred; only public key material and dispatch shell deployed
 
 See [SKILL.md](SKILL.md) for the full reference, including the Security Manifest and Trust & Privacy statement.
+
+---
+
+## CA Key Lifecycle
+
+The CA private key (`/etc/ssh/agent_ca`) created by `setup-ca.sh` is a **persistent operator-side credential** — it is not destroyed between sessions. If compromised, an attacker can mint valid SSH certificates for any target that trusts the CA.
+
+**Recommended controls:**
+- Run `setup-ca.sh` on a dedicated, hardened operator host — not on target servers
+- Restrict access to the CA private key (`chmod 400`, root-only, audit file access)
+- Maintain a key rotation policy (regenerate CA, redistribute public key to targets)
+- For high-security environments, use an HSM (Hardware Security Module) or an offline/air-gapped CA host
+
+Session artifacts (agent account, keypair, certificate, dispatch shell, cleanup timer) are fully destroyed on session end or TTL expiry. The CA key is the only credential that persists by design.
 
 ---
 
