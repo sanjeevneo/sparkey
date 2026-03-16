@@ -37,6 +37,26 @@ command -v ssh-keygen &>/dev/null || die "ssh-keygen is required but not found"
 if [[ -f "${ca_private}" ]]; then
   printf 'WARNING: CA key already exists at %s\n' "${ca_private}"
   printf 'To regenerate, first back up and remove the existing key.\n'
+
+  # Check key age — warn if older than 90 days
+  if command -v stat &>/dev/null; then
+    key_epoch=$(stat -c %Y "${ca_private}" 2>/dev/null || stat -f %m "${ca_private}" 2>/dev/null)
+    if [[ -n "${key_epoch:-}" ]]; then
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - key_epoch) / 86400 ))
+      if [[ ${age_days} -gt 90 ]]; then
+        printf '\nWARNING: CA key is %d days old. Consider rotating:\n' "${age_days}"
+        printf '  1. Back up the current key\n'
+        printf '  2. Remove %s and %s\n' "${ca_private}" "${ca_public}"
+        printf '  3. Re-run this script to generate a new CA\n'
+        printf '  4. Redistribute the new public key to all target servers\n'
+        printf '  5. Revoke any active sessions signed with the old CA\n'
+      else
+        printf '\nCA key age: %d days (rotation recommended after 90 days)\n' "${age_days}"
+      fi
+    fi
+  fi
+
   if [[ -f "${ca_public}" ]]; then
     printf '\nExisting CA public key:\n'
     cat "${ca_public}"

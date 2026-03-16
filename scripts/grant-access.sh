@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 ca_dir="/etc/ssh"
 ca_name="agent_ca"
@@ -11,9 +11,37 @@ agent_pubkey=""
 key_dir="/tmp"
 log_file="/var/log/agent-support.log"
 with_pty=false
+dry_run=false
+
+# Track provisioned artifacts for cleanup on failure
+_cleanup_agent_user=""
+_cleanup_support_shell=""
+_cleanup_key_path=""
+_cleanup_cleanup_script=""
 
 die()  { printf 'ERROR: %s\n' "${1}" >&2; exit 1; }
 warn() { printf 'WARNING: %s\n' "${1}" >&2; }
+
+cleanup_on_failure() {
+  local exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    printf '\nERROR: Script failed (exit %d). Cleaning up provisioned artifacts...\n' "${exit_code}" >&2
+    if [[ -n "${_cleanup_agent_user}" ]] && id "${_cleanup_agent_user}" &>/dev/null; then
+      userdel -r "${_cleanup_agent_user}" 2>/dev/null && printf '  Removed account: %s\n' "${_cleanup_agent_user}" >&2
+    fi
+    if [[ -n "${_cleanup_support_shell}" ]] && [[ -f "${_cleanup_support_shell}" ]]; then
+      rm -f "${_cleanup_support_shell}" && printf '  Removed shell: %s\n' "${_cleanup_support_shell}" >&2
+    fi
+    if [[ -n "${_cleanup_key_path}" ]]; then
+      rm -f "${_cleanup_key_path}" "${_cleanup_key_path}.pub" "${_cleanup_key_path}-cert.pub" 2>/dev/null && printf '  Removed keys: %s*\n' "${_cleanup_key_path}" >&2
+    fi
+    if [[ -n "${_cleanup_cleanup_script}" ]] && [[ -f "${_cleanup_cleanup_script}" ]]; then
+      rm -f "${_cleanup_cleanup_script}" && printf '  Removed cleanup script: %s\n' "${_cleanup_cleanup_script}" >&2
+    fi
+    printf 'Cleanup complete. No artifacts should remain from this failed session.\n' >&2
+  fi
+}
+trap cleanup_on_failure EXIT
 
 usage() {
   cat <<EOF
@@ -31,6 +59,7 @@ Options:
   --ca-dir DIR          CA key directory (default: /etc/ssh)
   --no-ca               Use authorized_keys with expiry-time instead of CA signing
   --with-pty            Allow interactive shell (default: command-only)
+  --dry-run             Show planned actions without executing
   --help                Show this help message
 EOF
   exit 0
@@ -118,6 +147,7 @@ while [[ $# -gt 0 ]]; do
     --ca-dir)       [[ $# -ge 2 ]] || die "--ca-dir requires a value"; ca_dir="${2}"; shift 2 ;;
     --no-ca)        use_ca=false; shift ;;
     --with-pty)     with_pty=true; shift ;;
+    --dry-run)      dry_run=true; shift ;;
     --help)         usage ;;
     *)              die "Unknown option: ${1}" ;;
   esac
@@ -142,6 +172,37 @@ case "${profile}" in
   *) die "Unknown profile '${profile}'. Use: diagnostic, remediation, full" ;;
 esac
 
+# Pre-flight: check target sshd version for expiry-time support (OpenSSH >= 8.2)
+check_target_sshd() {
+  local host="${1}"
+  printf 'Pre-flight: checking sshd version on %s...\n' "${host}"
+  local sshd_version
+  sshd_version=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+    "${host}" 'sshd -V 2>&1 || ssh -V 2>&1' 2>/dev/null) || true
+  if [[ -z "${sshd_version}" ]]; then
+    warn "Could not determine sshd version on ${host}. Verify manually that:"
+    warn "  - OpenSSH >= 8.2 (for expiry-time in authorized_keys)"
+    warn "  - TrustedUserCAKeys is configured (for CA mode)"
+    return 0
+  fi
+  printf '  Target sshd: %s\n' "${sshd_version}"
+  local version_num
+  version_num=$(printf '%s' "${sshd_version}" | grep -oP 'OpenSSH_\K[0-9]+\.[0-9]+' || true)
+  if [[ -n "${version_num}" ]]; then
+    local major minor
+    major="${version_num%%.*}"
+    minor="${version_num##*.}"
+    if [[ "${major}" -lt 8 ]] || { [[ "${major}" -eq 8 ]] && [[ "${minor}" -lt 2 ]]; }; then
+      warn "OpenSSH ${version_num} detected. expiry-time requires >= 8.2."
+      warn "The --no-ca authorized_keys approach may not enforce key expiry on this target."
+    fi
+  fi
+}
+
+if [[ "${dry_run}" == false ]]; then
+  check_target_sshd "${target_host}" 2>/dev/null || true
+fi
+
 session_id="$(date +%Y%m%d%H%M%S)-$(generate_hex_bytes 4)"
 agent_user="$(generate_unique_user)"
 support_shell="/usr/local/bin/agent-support-shell-${session_id}"
@@ -149,6 +210,37 @@ cleanup_script="/usr/local/sbin/agent-cleanup-${session_id}.sh"
 key_path="${key_dir}/agent_session_${session_id}"
 
 mkdir -p /usr/local/bin /usr/local/sbin
+
+if [[ "${dry_run}" == true ]]; then
+  printf '=== DRY RUN — No changes will be made ===\n'
+  printf 'Session ID:   %s\n' "${session_id}"
+  printf 'Target Host:  %s\n' "${target_host}"
+  printf 'Username:     %s\n' "${agent_user}"
+  printf 'Duration:     %s (%ds)\n' "${duration}" "${duration_secs}"
+  printf 'Profile:      %s\n' "${profile}"
+  printf 'Auth mode:    %s\n' "$([[ "${use_ca}" == true ]] && printf 'certificate' || printf 'authorized_keys')"
+  printf 'Key source:   %s\n' "$([[ -n "${agent_pubkey}" ]] && printf 'agent-provided' || printf 'generated')"
+  printf '\nPlanned actions:\n'
+  printf '  [1] Create account: %s (expires: %s)\n' "${agent_user}" "$(date -d "+$((duration_secs + 3600)) seconds" +%Y-%m-%d 2>/dev/null || printf 'N/A')"
+  if [[ "${profile}" != "full" ]]; then
+    printf '  [2] Install restriction shell: %s (%s profile)\n' "${support_shell}" "${profile}"
+  fi
+  if [[ -n "${agent_pubkey}" ]]; then
+    printf '  [3] Sign agent pubkey: %s\n' "${agent_pubkey}"
+  else
+    printf '  [3] Generate keypair: %s\n' "${key_path}"
+  fi
+  if [[ "${use_ca}" == true ]]; then
+    printf '  [4] Sign certificate with CA (TTL: %s)\n' "${duration}"
+  else
+    printf '  [4] Install authorized_keys with expiry-time\n'
+  fi
+  printf '  [5] Schedule cleanup: %d minutes after grant\n' "$(( (duration_secs + 600 + 59) / 60 ))"
+  printf '  [6] Log to: %s\n' "${log_file}"
+  printf '\n=== DRY RUN COMPLETE — No system state was changed ===\n'
+  trap - EXIT
+  exit 0
+fi
 
 printf '=== Granting Temporary SSH Access ===\n'
 printf 'Session ID: %s\nTarget:     %s\nDuration:   %s (%ds)\n' "${session_id}" "${target_host}" "${duration}" "${duration_secs}"
@@ -174,6 +266,7 @@ useradd \
   --create-home \
   --comment "AI Agent Support [${session_id}]" \
   "${agent_user}"
+_cleanup_agent_user="${agent_user}"
 
 passwd -l "${agent_user}" >/dev/null 2>&1
 
@@ -410,6 +503,7 @@ REMED_END
 
 if [[ "${profile}" != "full" ]]; then
   generate_support_shell "${profile}" "${support_shell}" "${log_file}"
+  _cleanup_support_shell="${support_shell}"
   printf '  Restricted shell installed at %s\n' "${support_shell}"
 else
   printf '  Profile '\''full'\'': no command restrictions (use with extreme caution)\n'
@@ -424,6 +518,7 @@ if [[ -n "${agent_pubkey}" ]]; then
   printf '  Using agent-provided public key: %s\n' "${agent_pubkey}"
 else
   ssh-keygen -t ed25519 -N "" -f "${key_path}" -C "agent-support-${session_id}" -q
+  _cleanup_key_path="${key_path}"
   chmod 600 "${key_path}"
   chmod 644 "${key_path}.pub"
   pubkey_path="${key_path}.pub"
@@ -516,6 +611,7 @@ printf '[%s] CLEANUP_COMPLETE: ${session_id}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)
 CLEANUP
 
 chmod 700 "${cleanup_script}"
+_cleanup_cleanup_script="${cleanup_script}"
 
 cleanup_delay_mins=$(( (duration_secs + 600 + 59) / 60 ))
 
@@ -573,3 +669,6 @@ printf '    ssh ... %s@%s '\''journalctl -n 50 --no-pager'\''\n' "${agent_user}"
 printf '\n  Revoke immediately:\n'
 printf '    sudo bash scripts/revoke-access.sh --session %s\n' "${session_id}"
 printf '===========================================\n'
+
+# Success — disable failure cleanup trap
+trap - EXIT

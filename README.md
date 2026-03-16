@@ -1,54 +1,74 @@
-# sparkey
+# 🔑 sparkey
 
-Time-limited, self-destructing SSH access for AI agents. Four-layer defense-in-depth: certificate TTL, OS account expiry, command-restricted dispatch, and automated cleanup. Zero session artifacts survive.
+**Time-limited, self-destructing SSH access for AI agents.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![AgentSkills](https://img.shields.io/badge/AgentSkills-compatible-brightgreen)](https://github.com/anthropics/skills/blob/main/spec/agent-skills-spec.md)
+[![ClawHub](https://img.shields.io/badge/ClawHub-sparkey-orange)](https://clawhub.com/skills/sparkey)
+
+> Your AI agent needs SSH access. Static keys are a liability. Sparkey gives it access that expires, restricts, audits, and self-destructs — in that order.
 
 ---
 
-## Why
+## The Problem
 
-Static credentials cause persistent breaches. A leaked SSH key works identically on day one and five years later. This skill applies the temporary-credential pattern — the same principle behind AWS STS and short-lived OAuth tokens — to SSH access for AI agents:
+When an AI agent needs to diagnose a server, you face a choice: hand it a long-lived SSH key (security nightmare) or manually provision and revoke access every time (operational nightmare).
 
-- **Expires automatically** — cryptographic certificate TTL, not "remember to revoke"
-- **Restricts commands** — read-only diagnostics by default, no full shell
+A leaked SSH key works identically on day one and five years later. There's no built-in expiry, no command restriction, no cleanup. If the agent crashes mid-session, the key lives forever.
+
+Temporary accounts should be time-limited by design, with automated deprovisioning when access is no longer needed. Agents should operate under least privilege — the minimum rights necessary for the task at hand. Static SSH keys satisfy neither requirement.
+
+## The Solution
+
+Sparkey applies the temporary-credential pattern — the same principle behind just-in-time privileged access management and short-lived authentication tickets — to SSH access for AI agents:
+
+- **Expires automatically** — cryptographic certificate TTL with managed credential rotation, not "remember to revoke"
+- **Restricts commands** — read-only diagnostics by default, enforcing least privilege at the shell level
 - **Leaves no session artifacts** — account, keys, and scripts destroyed after each session
-- **Logs everything** — sanitized audit trail of every command
+- **Logs everything** — sanitized audit trail of every command, supporting accountability and incident reconstruction
+- **Survives agent crashes** — independent dead-man timers clean up even if the agent never comes back
 
 ---
 
-## How It Works
+## Defense in Depth
 
-Four independent defense layers ensure no single failure leaves access open:
+Four independent layers enforce access control. Each fails safe on its own — a vulnerability in one layer does not bypass the others. Controls are deployed at multiple independent enforcement points to eliminate single points of failure.
 
 <picture>
-  <img src="diagrams/sparkey_defense_in_depth.svg" alt="Four-layer defense in depth — SSH certificate TTL, OS account expiration, safe command dispatch, and scheduled cleanup" width="680">
+  <img src="diagrams/sparkey_defense_in_depth.svg" alt="Four-layer defense in depth" width="680">
 </picture>
 
-| Layer | Mechanism | Enforcement |
-| ----- | --------- | ----------- |
-| 1 | SSH Certificate TTL | Cryptographic — server rejects expired certs |
-| 2 | OS Account Expiration | `useradd --expiredate` — kernel-level denial |
-| 3 | Safe Command Dispatch | Exact match, path validation, no `eval` |
-| 4 | Scheduled Cleanup | `at` or `systemd-run` — destroys all artifacts |
+| Layer | Mechanism | Enforcement Point |
+| ----- | --------- | ----------------- |
+| **1. Certificate TTL** | `ssh-keygen -V +Nh` | Server-side — cryptographic rejection of expired certs, unforgeable |
+| **2. OS Account Expiry** | `useradd --expiredate` | Kernel-level — login denied regardless of valid credentials |
+| **3. Command Dispatch** | Exact `case` match, `readlink -f` path validation, no `eval` | Application-level — unlisted commands rejected before execution |
+| **4. Scheduled Cleanup** | `at` / `systemd-run` dead-man timer | Scheduler-level — fires independently of agent process lifecycle |
 
 ---
 
 ## Access Lifecycle
 
 <picture>
-  <img src="diagrams/sparkey_access_lifecycle.svg" alt="Access lifecycle — from agent request through key generation, verification, shared session, work, to cleanup with zero artifacts remaining" width="680">
+  <img src="diagrams/sparkey_access_lifecycle.svg" alt="Access lifecycle — request through cleanup" width="680">
 </picture>
+
+---
 
 ## Quick Start
 
-**Agent-initiated (simplest):** The agent generates its own keypair and offers the public key. The user adds it to the target's `authorized_keys`. No scripts run on the target.
-
-**CA-backed (strongest):** Layers certificate signing, command restriction, and scheduled cleanup for defense in depth. All scripts run on the operator's machine:
-
 ```bash
-# One-time: create Certificate Authority
+# One-time: create Certificate Authority on your operator host
 sudo bash scripts/setup-ca.sh
 
-# Grant 4-hour diagnostic access (agent provides their pubkey)
+# Preview what will happen (no changes made)
+sudo bash scripts/grant-access.sh \
+  --host myserver.example.com \
+  --duration 4h \
+  --agent-pubkey /path/to/agent.pub \
+  --dry-run
+
+# Grant 4-hour diagnostic access
 sudo bash scripts/grant-access.sh \
   --host myserver.example.com \
   --duration 4h \
@@ -56,28 +76,60 @@ sudo bash scripts/grant-access.sh \
 
 # Revoke immediately if needed
 sudo bash scripts/revoke-access.sh --session SESSION_ID
+
+# Scan for any orphaned artifacts from previous sessions
+sudo bash scripts/audit.sh
 ```
 
 ---
 
 ## Command Profiles
 
-| Profile | Access Level |
-| ------- | ------------ |
-| `diagnostic` (default) | Read-only: logs, status, metrics, network diagnostics |
-| `remediation` | Diagnostic + service restarts, config edits, Docker management |
-| `full` | Unrestricted shell (use with extreme caution) |
+| Profile | Scope |
+| ------- | ----- |
+| `diagnostic` *(default)* | Read logs, check service status, view metrics, network diagnostics. Read-only — no state changes. |
+| `remediation` | Diagnostic scope + restart services, edit configs, manage Docker containers. Write access to `/etc/`, `/var/`, `/tmp/`. |
+| `full` | Unrestricted shell. Bypasses Layer 3 — use only when the task cannot be scoped to a profile. |
+
+The agent's effective permissions are the intersection of the OS account, the certificate options, and the dispatch shell allowlist. No single layer grants more than the others permit.
 
 ---
 
-## Requirements
+## Security Controls
 
-- **Linux** with standard user-management tools
-- `openssh-client` (`ssh-keygen`)
-- `at` or `systemd` (scheduled cleanup)
-- Optional: `shred` (secure key deletion), `chattr` (immutable authorized\_keys)
+| Control | How |
+| ------- | --- |
+| No `eval` | Commands dispatched directly as `"$COMMAND" "${ARGS[@]}"` — no shell interpretation |
+| No prefix matching | Exact command-name match via `case` — `systemctl status` allowed, `systemctl enable` denied |
+| Metacharacter blocking | `;` `\|` `&` `$` `` ` `` `()` `{}` `<>` `\` rejected before any parsing |
+| Path restriction | Arguments validated against directory allowlists; symlinks resolved via `readlink -f` before comparison |
+| Log sanitization | `printf '%q'` escaping prevents injection into the audit trail |
+| Session isolation | Per-session dispatch shell and cleanup timer — no cross-session interference |
+| Real-time observability | Shared `screen`/`tmux` session lets the operator watch the agent work live |
+| Crash safety | `expiry-time` (OpenSSH 8.2+) and `at` timer fire independently of the agent process |
 
-Scripts check for missing tools at startup and report what to install:
+No data leaves the machine. No telemetry. No analytics. No external endpoints. All operations are local to the operator and target hosts.
+
+---
+
+## Installation
+
+### From ClawHub
+
+```bash
+clawhub install sparkey
+```
+
+### Manual
+
+```bash
+git clone https://github.com/sanjeevneo/sparkey.git \
+  /path/to/your/skills/sparkey
+```
+
+### Requirements
+
+Linux with standard user-management tools. Scripts check dependencies at startup and report what to install:
 
 ```bash
 # Debian/Ubuntu
@@ -92,54 +144,26 @@ sudo dnf install -y openssh-clients coreutils shadow-utils at e2fsprogs procps-n
 
 ---
 
-## Installation
-
-### As a Claude Code Skill
-
-```bash
-git clone https://github.com/sanjeevneo/sparkey.git \
-  ~/.claude/skills/sparkey
-```
-
-### From ClawHub
-
-```bash
-clawhub install sparkey
-```
-
-The SKILL.md file follows the [Agent Skills open standard](https://github.com/anthropics/skills/blob/main/spec/agent-skills-spec.md) and is compatible with Claude Code, OpenClaw, and other conforming tools.
-
----
-
-## Security
-
-- **No `eval`** — commands dispatched directly via `"$COMMAND" "${ARGS[@]}"`
-- **No prefix matching** — exact command-name match via `case` statement
-- **Shell metacharacters blocked** — `;` `|` `&` `$` and backticks rejected before parsing
-- **Path-restricted arguments** — diagnostic profile limited to `/var/log/`, `/proc/`, `/sys/`, `/run/`, `/tmp/`
-- **Sanitized audit logs** — `printf '%q'` prevents log injection
-- **Session isolation** — each session gets its own dispatch shell and cleanup timer
-- **Real-time observability** — agent creates a shared `screen`/`tmux` session the user can attach to
-- **Minimal target footprint** — no scripts transferred; only public key material and dispatch shell deployed
-
-See [SKILL.md](SKILL.md) for the full reference, including the Security Manifest and Trust & Privacy statement.
-
----
-
 ## CA Key Lifecycle
 
-The CA private key (`/etc/ssh/agent_ca`) created by `setup-ca.sh` is a **persistent operator-side credential** — it is not destroyed between sessions. If compromised, an attacker can mint valid SSH certificates for any target that trusts the CA.
+The CA private key (`/etc/ssh/agent_ca`) is a persistent operator-side credential — the one thing that intentionally survives sessions. Like any signing authority, compromise allows minting valid certificates for any target that trusts the CA.
 
 **Recommended controls:**
 - Run `setup-ca.sh` on a dedicated, hardened operator host — not on target servers
-- Restrict access to the CA private key (`chmod 400`, root-only, audit file access)
-- Maintain a key rotation policy (regenerate CA, redistribute public key to targets)
-- For high-security environments, use an HSM (Hardware Security Module) or an offline/air-gapped CA host
+- Restrict to `chmod 400`, root-only access, with file access auditing enabled
+- Rotate periodically — `setup-ca.sh` warns after 90 days
+- For high-security environments, use an HSM or an air-gapped CA host
 
-Session artifacts (agent account, keypair, certificate, dispatch shell, cleanup timer) are fully destroyed on session end or TTL expiry. The CA key is the only credential that persists by design.
+Session artifacts — agent accounts, keys, certificates, dispatch shells, cleanup timers — are destroyed on session end or TTL expiry. The CA key is the only credential that persists by design.
+
+---
+
+## Compatibility
+
+Sparkey follows the [AgentSkills open standard](https://github.com/anthropics/skills/blob/main/spec/agent-skills-spec.md) and works with any conforming agent platform. See [SKILL.md](SKILL.md) for the full reference, including the Security Manifest and Trust & Privacy statement.
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE)

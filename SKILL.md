@@ -153,14 +153,20 @@ All scripts run on the **operator's machine** (the admin/signing host), not on t
 # 1. One-time: Initialize the SSH Certificate Authority (run on admin/signing host)
 sudo bash scripts/setup-ca.sh
 
-# 2a. Grant access using the agent's existing public key (recommended):
+# 2a. Preview what would happen (no changes made):
+sudo bash scripts/grant-access.sh --host TARGET_HOST --duration 4h --agent-pubkey /path/to/agent_key.pub --dry-run
+
+# 2b. Grant access using the agent's existing public key (recommended):
 sudo bash scripts/grant-access.sh --host TARGET_HOST --duration 4h --agent-pubkey /path/to/agent_key.pub
 
-# 2b. Or generate a keypair (you must securely deliver the private key to the agent):
+# 2c. Or generate a keypair (you must securely deliver the private key to the agent):
 sudo bash scripts/grant-access.sh --host TARGET_HOST --duration 4h --allow diagnostic
 
 # 3. Revoke access: Immediately revoke before TTL expires (if needed)
 sudo bash scripts/revoke-access.sh --session SESSION_ID
+
+# 4. Audit: Scan for orphaned artifacts from previous sessions
+sudo bash scripts/audit.sh
 ```
 
 ## Detailed Workflow
@@ -470,9 +476,10 @@ If the agent loses access mid-session (certificate expired, context lost, networ
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `setup-ca.sh` | `scripts/` | One-time CA key pair generation |
-| `grant-access.sh` | `scripts/` | Provision temporary agent access (full workflow) |
-| `revoke-access.sh` | `scripts/` | Immediate access revocation and cleanup |
+| `setup-ca.sh` | `scripts/` | One-time CA key pair generation (warns on key age >90 days) |
+| `grant-access.sh` | `scripts/` | Provision temporary agent access (supports `--dry-run`, sshd pre-flight check) |
+| `revoke-access.sh` | `scripts/` | Immediate access revocation with post-removal verification |
+| `audit.sh` | `scripts/` | Scan for orphaned artifacts (accounts, keys, shells, at jobs) |
 | CA private key | `/etc/ssh/agent_ca` | Signs session certificates (keep secure) |
 | CA public key | `/etc/ssh/agent_ca.pub` | Distributed to target servers |
 | Support shell | `/usr/local/bin/agent-support-shell-SID` | Per-session command dispatch |

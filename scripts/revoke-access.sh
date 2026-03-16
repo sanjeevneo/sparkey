@@ -126,6 +126,42 @@ revoke_single() {
   printf '[%s] SESSION_REVOKED: %s user=%s reason=manual_revoke\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${target_sid}" "${target_user}" >> "${LOG_FILE}"
 
+  # Post-revocation verification
+  printf '  [VERIFY] Checking artifact removal...\n'
+  local verify_pass=true
+  if id "${target_user}" &>/dev/null; then
+    printf '    FAIL: Account %s still exists\n' "${target_user}"
+    verify_pass=false
+  else
+    printf '    PASS: Account removed\n'
+  fi
+  for vf in "/tmp/agent_session_${target_sid}" "/tmp/agent_session_${target_sid}.pub" "/tmp/agent_session_${target_sid}-cert.pub"; do
+    if [[ -f "${vf}" ]]; then
+      printf '    FAIL: Key file still exists: %s\n' "${vf}"
+      verify_pass=false
+    fi
+  done
+  if [[ ! -f "/tmp/agent_session_${target_sid}" ]] && [[ ! -f "/tmp/agent_session_${target_sid}.pub" ]]; then
+    printf '    PASS: Session keys removed\n'
+  fi
+  if [[ -f "/usr/local/bin/agent-support-shell-${target_sid}" ]]; then
+    printf '    FAIL: Support shell still exists\n'
+    verify_pass=false
+  else
+    printf '    PASS: Support shell removed\n'
+  fi
+  if [[ -f "/usr/local/sbin/agent-cleanup-${target_sid}.sh" ]]; then
+    printf '    FAIL: Cleanup script still exists\n'
+    verify_pass=false
+  else
+    printf '    PASS: Cleanup script removed\n'
+  fi
+  if [[ "${verify_pass}" == true ]]; then
+    printf '  [VERIFY] All artifacts confirmed removed.\n'
+  else
+    printf '  [VERIFY] WARNING: Some artifacts could not be removed. Manual cleanup required.\n'
+  fi
+
   printf '%s Access revoked for %s ---\n\n' '---' "${target_user}"
 }
 
