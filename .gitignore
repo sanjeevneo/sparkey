@@ -1,0 +1,6 @@
+.claude/
+.DS_Store
+*.swp
+*.swo
+*~
+source_documents/
