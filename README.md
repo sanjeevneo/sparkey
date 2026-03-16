@@ -19,6 +19,10 @@ Static credentials cause persistent breaches. A leaked SSH key works identically
 
 Four independent defense layers ensure no single failure leaves access open:
 
+<picture>
+  <img src="diagrams/sparkey_defense_in_depth.svg" alt="Four-layer defense in depth — SSH certificate TTL, OS account expiration, safe command dispatch, and scheduled cleanup" width="680">
+</picture>
+
 | Layer | Mechanism | Enforcement |
 | ----- | --------- | ----------- |
 | 1 | SSH Certificate TTL | Cryptographic — server rejects expired certs |
@@ -27,6 +31,12 @@ Four independent defense layers ensure no single failure leaves access open:
 | 4 | Scheduled Cleanup | `at` or `systemd-run` — destroys all artifacts |
 
 ---
+
+## Access Lifecycle
+
+<picture>
+  <img src="diagrams/sparkey_access_lifecycle.svg" alt="Access lifecycle — from agent request through key generation, verification, shared session, work, to cleanup with zero artifacts remaining" width="680">
+</picture>
 
 ## Quick Start
 
